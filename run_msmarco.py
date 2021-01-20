@@ -22,13 +22,14 @@ FLAGS = flags.FLAGS
 ## Required parameters
 flags.DEFINE_string(
     "data_dir", 
-    "./data/tfrecord/",
+    "./data/MS MARCO/tfrecord",
     "The input data dir. Should contain the .tfrecord files and the supporting "
     "query-docids mapping files.")
 
 flags.DEFINE_string(
     "bert_config_file",
-    "./data/bert/pretrained_models/uncased_L-24_H-1024_A-16/bert_config.json",
+    # "data/uncased_L-24_H-1024_A-16/bert_config.json",
+    "./data/MS MARCO/BERT_Large_trained_on_MSMARCO/bert_config.json",
     "The config json file corresponding to the pre-trained BERT model. "
     "This specifies the model architecture.")
 
@@ -42,7 +43,8 @@ flags.DEFINE_boolean(
 
 flags.DEFINE_string(
     "init_checkpoint",
-    "./data/bert/pretrained_models/uncased_L-24_H-1024_A-16/bert_model.ckpt",
+    "./data/MS MARCO/BERT_Large_trained_on_MSMARCO/model.ckpt-100000",
+    # "./data/uncased_L-24_H-1024_A-16/bert_model.ckpt",
     "Initial checkpoint (usually from a pre-trained BERT model).")
 
 flags.DEFINE_integer(
@@ -51,9 +53,9 @@ flags.DEFINE_integer(
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded.")
 
-flags.DEFINE_bool("do_train", True, "Whether to run training.")
+flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
-flags.DEFINE_bool("do_eval", True, "Whether to run eval on the dev set.")
+flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
 
 flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
 
@@ -362,7 +364,7 @@ def main(_):
     tf.logging.info("Done Training!")
 
   if FLAGS.do_eval:
-    for set_name in ["dev", "eval"]:
+    for set_name in ["eval"]:
       tf.logging.info("***** Running evaluation *****")
       tf.logging.info("  Batch size = %d", FLAGS.eval_batch_size)
       max_eval_examples = None

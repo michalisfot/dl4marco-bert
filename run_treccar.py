@@ -24,13 +24,13 @@ FLAGS = flags.FLAGS
 ## Required parameters
 flags.DEFINE_string(
     "data_dir", 
-    "./data/tfrecord/",
+    "./data/TRECCAR/tfrecord",
     "The input data dir. Should contain the .tfrecord files and the supporting "
     "query-docids mapping files.")
 
 flags.DEFINE_string(
     "bert_config_file",
-    "./data/bert/pretrained_models/uncased_L-24_H-1024_A-16/bert_config.json",
+    "./data/TRECCAR/BERT_Large_trained_on_TREC_CAR/bert_config.json",
     "The config json file corresponding to the pre-trained BERT model. "
     "This specifies the model architecture.")
 
@@ -44,7 +44,7 @@ flags.DEFINE_boolean(
 
 flags.DEFINE_string(
     "init_checkpoint",
-    "/path_to_bert_pretrained_on_treccar/model.ckpt-1000000",
+    "./data/TRECCAR/BERT_Large_trained_on_TREC_CAR/model.ckpt-100000",
     "Initial checkpoint (usually from a pre-trained BERT model).")
 
 flags.DEFINE_integer(
@@ -53,7 +53,7 @@ flags.DEFINE_integer(
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded.")
 
-flags.DEFINE_bool("do_train", True, "Whether to run training.")
+flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
 flags.DEFINE_bool("do_eval", True, "Whether to run eval on the dev set.")
 
@@ -379,7 +379,7 @@ def main(_):
     tf.logging.info("Done Training!")
 
   if FLAGS.do_eval:
-    for set_name in ["dev", "test"]:
+    for set_name in ["test"]:
       tf.logging.info("***** Running evaluation on the {} set*****".format(
           set_name))
       tf.logging.info("  Batch size = %d", FLAGS.eval_batch_size)

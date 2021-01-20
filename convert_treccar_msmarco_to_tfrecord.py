@@ -11,6 +11,7 @@ import collections
 import os
 import tensorflow as tf
 import time
+import csv
 # local modules
 import tokenization
 import trec_car_classes
@@ -19,7 +20,7 @@ flags = tf.flags
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string(
-    "output_folder", './CAsT_tf_record',
+    "output_folder", './CAsT_tf_record/Y1',
     "Folder where the TFRecord files will be writen.")
 
 flags.DEFINE_string(
@@ -28,11 +29,15 @@ flags.DEFINE_string(
     "The vocabulary file that the BERT model was trained on.")
 
 flags.DEFINE_string(
-    "corpus", "/home/michalis/Desktop/CAsT/Collection/TRECCAR/dedup.articles-paragraphs.cbor",
+    "car_corpus", "/home/michalis/Desktop/CAsT/Collection/TRECCAR/dedup.articles-paragraphs.cbor",
     "Path to the cbor file containing the Wikipedia paragraphs.")
 
 flags.DEFINE_string(
-    "topics", "/home/michalis/Desktop/CAsT/2019/eval/automatic/allennlp_resolved_v5.txt",
+    "msmarco_corpus", "/home/michalis/Desktop/CAsT/Collection/MSMARCO/MSMARCO_collection.tsv",
+    "Path to the cbor file containing the MS MARCO paragraphs.")
+
+flags.DEFINE_string(
+    "topics", "/home/michalis/Desktop/CAsT/2019/eval/origin/queries/evaluation_topics_annotated_resolved_v1.0.tsv",
     "Path to the full queries.")
 
 flags.DEFINE_string(
@@ -56,7 +61,7 @@ flags.DEFINE_string(
     "Path to the topic / candidate doc ids pairs for dev.")
 
 flags.DEFINE_string(
-    "run_test", "/home/michalis/Desktop/CAsT/2019/eval/automatic/I013b.run",
+    "run_test", "/home/michalis/Desktop/CAsT/2019/eval/manual/I013.run",
     "Path to the topic / candidate doc ids pairs for test.")
 
 flags.DEFINE_integer(
@@ -83,8 +88,8 @@ flags.DEFINE_integer(
     "The number of docs per query for the test set.")
 
 
-def convert_dataset(data, corpus, set_name, tokenizer):
-    output_path = FLAGS.output_folder + '/CAR_dataset_' + set_name + '.tf'
+def convert_dataset(data, corpus, set_name, tokenizer, output_name):
+    output_path = FLAGS.output_folder + '/CAR_MSMARCO_dataset_' + output_name + set_name + '.tf'  # CHANGE
     print('Converting {} to tfrecord'.format(set_name))
     start_time = time.time()
     random_title = list(corpus.keys())[0]
@@ -147,10 +152,8 @@ def load_qrels(path):
     qrels = collections.defaultdict(set)
     with open(path) as f:
         for i, line in enumerate(f):
-            topic, _, doc_title, relevance = line.rstrip().split(' ')
-            collection = doc_title.rstrip().split('_')[0]
-            if int(relevance) >= 1 and collection == 'CAR':
-                doc_id = doc_title.rstrip().split('_')[1]
+            topic, _, doc_id, relevance = line.rstrip().split(' ')
+            if int(relevance) >= 1:
                 qrels[topic].add(doc_id)
             if i % 1000000 == 0:
                 print('Loading qrels {}'.format(i))
@@ -165,13 +168,10 @@ def load_run(path):
     run = collections.OrderedDict()
     with open(path) as f:
         for i, line in enumerate(f):
-            topic, _, doc_title, rank, _, _ = line.split(' ')
-            collection = doc_title.rstrip().split('_')[0]
+            topic, _, doc_id, rank, _, _ = line.split(' ')
             if topic not in run:
                 run[topic] = []
-            if collection == 'CAR':
-                doc_id = doc_title.rstrip().split('_')[1]
-                run[topic].append((doc_id, int(rank)))
+            run[topic].append((doc_id, int(rank)))
             if i % 1000000 == 0:
                 print('Loading run {}'.format(i))
     # Sort candidate docs by rank.
@@ -195,18 +195,18 @@ def load_queries(path):
     return queries
 
 
-def load_corpus(path):
-    """Loads TREC-CAR's paraghaphs into a dict of key: title, value: paragraph."""
+def load_corpus(car_path, masmarco_path):
+    """Loads TREC-CAR's and MS-MARCO's paraghaphs into a dict of key: title, value: paragraph."""
     corpus = {}
     start_time = time.time()
     approx_total_paragraphs = 30000000
 
-    with open(path, 'rb') as f:
+    with open(car_path, 'rb') as f:
         for i, p in enumerate(trec_car_classes.iter_paragraphs(f)):
             para_txt = [elem.text if isinstance(elem, trec_car_classes.ParaText)
                         else elem.anchor_text
                         for elem in p.bodies]
-            corpus[p.para_id] = ' '.join(para_txt)
+            corpus['CAR_'+p.para_id] = ' '.join(para_txt)
             if i % 10000 == 0:
                 print('Loading paragraph {} of {}'.format(i, approx_total_paragraphs))
                 time_passed = time.time() - start_time
@@ -214,6 +214,22 @@ def load_corpus(path):
                                           approx_total_paragraphs - i) * time_passed / (max(1.0, i) * 3600)
                 print('Estimated hours remaining to load corpus: {}'.format(
                     hours_remaining))
+
+    approx_total_paragraphs = 9000000
+
+    with open(masmarco_path) as tsv:
+        for i, line in enumerate(csv.reader(tsv, delimiter="\t")):
+            para_id = line[0]
+            para_txt = line[1]
+            corpus['MARCO_'+para_id] = para_txt
+            if i % 10000 == 0:
+                print('Loading paragraph {} of {}'.format(i, approx_total_paragraphs))
+                time_passed = time.time() - start_time
+                hours_remaining = (
+                                          approx_total_paragraphs - i) * time_passed / (max(1.0, i) * 3600)
+                print('Estimated hours remaining to load corpus: {}'.format(
+                    hours_remaining))
+
     return corpus
 
 
@@ -239,18 +255,34 @@ def main():
         os.mkdir(FLAGS.output_folder)
 
     print('Loading Corpus...')
-    corpus = load_corpus(FLAGS.corpus)
+    corpus = load_corpus(FLAGS.car_corpus, FLAGS.msmarco_corpus)
 
-    for set_name, qrels_path, run_path in [
-            # ('train', FLAGS.qrels_train, FLAGS.run_train),
-            # ('dev', FLAGS.qrels_dev, FLAGS.run_dev),
-            ('test', FLAGS.qrels_test, FLAGS.run_test)]:
+    for set_name, qrels_path, run_path in [('test', FLAGS.qrels_test, FLAGS.run_test)]:
         print('Converting {}'.format(set_name))
         qrels = load_qrels(path=qrels_path)
         run = load_run(path=run_path)
         queries = load_queries(path=FLAGS.topics)
         data = merge(topics=queries, qrels=qrels, run=run)
-        convert_dataset(data=data, corpus=corpus, set_name=set_name, tokenizer=tokenizer)
+        convert_dataset(data=data, corpus=corpus, set_name=set_name, tokenizer=tokenizer, output_name='I013_manual_')
+
+    # set_name = 'test'
+    # qrels_path = "/home/michalis/Desktop/CAsT/2020/TREC 2020 results/qrels-reduced-cast-2020.txt"
+    #
+    # print('Converting {}'.format(set_name))
+    # qrels = load_qrels(path=qrels_path)
+    # run = load_run(path="/home/michalis/Desktop/CAsT/2020/post_competition/I013_automatic.run")
+    # queries = load_queries(path='/home/michalis/Desktop/CAsT/2020/origin/2020_automatic_evaluation_topics_v1.0.json_reformed.txt')
+    # data = merge(topics=queries, qrels=qrels, run=run)
+    # convert_dataset(data=data, corpus=corpus, set_name=set_name, tokenizer=tokenizer, output_name='I013_automatic_')
+
+    # print('Done!')
+
+    # print('Converting {}'.format(set_name))
+    # qrels = load_qrels(path=qrels_path)
+    # run = load_run(path="/home/michalis/Desktop/CAsT/2020/post_competition/I013_manual.run")
+    # queries = load_queries(path='/home/michalis/Desktop/CAsT/2020/origin/2020_manual_evaluation_topics_v1.0.json_reformed.txt')
+    # data = merge(topics=queries, qrels=qrels, run=run)
+    # convert_dataset(data=data, corpus=corpus, set_name=set_name, tokenizer=tokenizer, output_name='I013_manual_')
 
     print('Done!')
 

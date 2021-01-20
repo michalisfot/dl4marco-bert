@@ -1,52 +1,64 @@
-"""
-This code converts MS MARCO train, dev and eval tsv data into the tfrecord files
-that will be consumed by BERT.
+"""Converts TREC-CAR queries and corpus into TFRecord that will be consumed by BERT.
+
+The main necessary inputs are:
+- Paragraph Corpus (CBOR file) 
+- Pairs of Query-Relevant Paragraph (called qrels in TREC's nomenclature)
+- Pairs of Query-Candidate Paragraph (called run in TREC's nomenclature)
+
+The outputs are 3 TFRecord files, for training, dev and test.
 """
 import collections
 import os
-import re
 import tensorflow as tf
 import time
-# local module
+import csv
+# local modules
 import tokenization
-
+import trec_car_classes
 
 flags = tf.flags
-
 FLAGS = flags.FLAGS
 
-
 flags.DEFINE_string(
-    "output_folder", None,
-    "Folder where the tfrecord files will be written.")
+    "output_folder", './CAsT_tf_record',
+    "Folder where the TFRecord files will be writen.")
 
 flags.DEFINE_string(
     "vocab_file",
-    "./data/bert/uncased_L-24_H-1024_A-16/vocab.txt",
+    "/home/michalis/Desktop/dl4marco-bert/data/uncased_L-24_H-1024_A-16/vocab.txt",
     "The vocabulary file that the BERT model was trained on.")
 
 flags.DEFINE_string(
-    "train_dataset_path",
-    "./data/triples.train.small.tsv",
-    "Path to the MSMARCO training dataset containing the tab separated "
-    "<query, positive_paragraph, negative_paragraph> tuples.")
+    "corpus", "/home/michalis/Desktop/CAsT/Collection/MSMARCO/MSMARCO_collection.tsv",
+    "Path to the cbor file containing the Wikipedia paragraphs.")
 
 flags.DEFINE_string(
-    "dev_dataset_path",
-    "./data/top1000.dev.tsv",
-    "Path to the MSMARCO training dataset containing the tab separated "
-    "<query, positive_paragraph, negative_paragraph> tuples.")
+    "topics", "/home/michalis/Desktop/CAsT/2019/eval/automatic/allennlp_resolved_v5.txt",
+    "Path to the full queries.")
 
 flags.DEFINE_string(
-    "eval_dataset_path",
-    "./data/top1000.eval.tsv",
-    "Path to the MSMARCO eval dataset containing the tab separated "
-    "<query, positive_paragraph, negative_paragraph> tuples.")
+    "qrels_train", "./data/train.qrels",
+    "Path to the topic / relevant doc ids pairs for training.")
 
 flags.DEFINE_string(
-    "dev_qrels_path",
-    "./data/qrels.dev.tsv",
-    "Path to the query_id relevant doc ids mapping.")
+    "qrels_dev", "./data/dev.qrels",
+    "Path to the topic / relevant doc ids pairs for dev.")
+
+flags.DEFINE_string(
+    "qrels_test", "/home/michalis/Desktop/CAsT/2019/eval/2019qrels.txt",
+    "Path to the topic / relevant doc ids pairs for test.")
+
+flags.DEFINE_string(
+    "run_train", "./data/train.run",
+    "Path to the topic / candidate doc ids pairs for training.")
+
+flags.DEFINE_string(
+    "run_dev", "./data/dev.run",
+    "Path to the topic / candidate doc ids pairs for dev.")
+
+flags.DEFINE_string(
+    "run_test", "/home/michalis/Desktop/CAsT/2019/eval/automatic/I013b.run",
+    "Path to the topic / candidate doc ids pairs for test.")
 
 flags.DEFINE_integer(
     "max_seq_length", 512,
@@ -60,158 +72,188 @@ flags.DEFINE_integer(
     "Sequences longer than this will be truncated.")
 
 flags.DEFINE_integer(
-    "num_eval_docs", 1000,
-    "The maximum number of docs per query for dev and eval sets.")
+    "num_train_docs", 10,
+    "The number of docs per query for the training set.")
+
+flags.DEFINE_integer(
+    "num_dev_docs", 10,
+    "The number of docs per query for the development set.")
+
+flags.DEFINE_integer(
+    "num_test_docs", 100,
+    "The number of docs per query for the test set.")
 
 
-def write_to_tf_record(writer, tokenizer, query, docs, labels,
-                       ids_file=None, query_id=None, doc_ids=None):
-  query = tokenization.convert_to_unicode(query)
-  query_token_ids = tokenization.convert_to_bert_input(
-      text=query, max_seq_length=FLAGS.max_query_length, tokenizer=tokenizer, 
-      add_cls=True)
-
-  query_token_ids_tf = tf.train.Feature(
-      int64_list=tf.train.Int64List(value=query_token_ids))
-
-  for i, (doc_text, label) in enumerate(zip(docs, labels)):
-
-    doc_token_id = tokenization.convert_to_bert_input(
-          text=tokenization.convert_to_unicode(doc_text),
-          max_seq_length=FLAGS.max_seq_length - len(query_token_ids),
-          tokenizer=tokenizer,
-          add_cls=False)
-
-    doc_ids_tf = tf.train.Feature(
-        int64_list=tf.train.Int64List(value=doc_token_id))
-
-    labels_tf = tf.train.Feature(
-        int64_list=tf.train.Int64List(value=[label]))
-
-    features = tf.train.Features(feature={
-        'query_ids': query_token_ids_tf,
-        'doc_ids': doc_ids_tf,
-        'label': labels_tf,
-    })
-    example = tf.train.Example(features=features)
-    writer.write(example.SerializeToString())
-
-    if ids_file:
-     ids_file.write('\t'.join([query_id, doc_ids[i]]) + '\n')
-
-def convert_eval_dataset(set_name, tokenizer):
-  print('Converting {} set to tfrecord...'.format(set_name))
-  start_time = time.time()
-
-  if set_name == 'dev':
-    dataset_path = FLAGS.dev_dataset_path
-    relevant_pairs = set()
-    with open(FLAGS.dev_qrels_path) as f:
-      for line in f:
-        query_id, _, doc_id, _ = line.strip().split('\t')
-        relevant_pairs.add('\t'.join([query_id, doc_id]))
-  else:
-    dataset_path = FLAGS.eval_dataset_path
-
-  queries_docs = collections.defaultdict(list)  
-  query_ids = {}
-  with open(dataset_path, 'r') as f:
-    for i, line in enumerate(f):
-      query_id, doc_id, query, doc = line.strip().split('\t')
-      label = 0
-      if set_name == 'dev':
-        if '\t'.join([query_id, doc_id]) in relevant_pairs:
-          label = 1
-      queries_docs[query].append((doc_id, doc, label))
-      query_ids[query] = query_id
-
-  # Add fake paragraphs to the queries that have less than FLAGS.num_eval_docs.
-  queries = list(queries_docs.keys())  # Need to copy keys before iterating.
-  for query in queries:
-    docs = queries_docs[query]
-    docs += max(
-        0, FLAGS.num_eval_docs - len(docs)) * [('00000000', 'FAKE DOCUMENT', 0)]
-    queries_docs[query] = docs
-
-  assert len(
-      set(len(docs) == FLAGS.num_eval_docs for docs in queries_docs.values())) == 1, (
-          'Not all queries have {} docs'.format(FLAGS.num_eval_docs))
-
-  writer = tf.python_io.TFRecordWriter(
-      FLAGS.output_folder + '/dataset_' + set_name + '.tf')
-
-  query_doc_ids_path = (
-      FLAGS.output_folder + '/query_doc_ids_' + set_name + '.txt')
-  with open(query_doc_ids_path, 'w') as ids_file:
-    for i, (query, doc_ids_docs) in enumerate(queries_docs.items()):
-      doc_ids, docs, labels = zip(*doc_ids_docs)
-      query_id = query_ids[query]
-
-      write_to_tf_record(writer=writer,
-                         tokenizer=tokenizer,
-                         query=query, 
-                         docs=docs, 
-                         labels=labels,
-                         ids_file=ids_file,
-                         query_id=query_id,
-                         doc_ids=doc_ids)
-
-      if i % 100 == 0:
-        print('Writing {} set, query {} of {}'.format(
-            set_name, i, len(queries_docs)))
-        time_passed = time.time() - start_time
-        hours_remaining = (
-            len(queries_docs) - i) * time_passed / (max(1.0, i) * 3600)
-        print('Estimated hours remaining to write the {} set: {}'.format(
-            set_name, hours_remaining))
-  writer.close()
+def convert_dataset(data, corpus, set_name, tokenizer):
+    output_path = FLAGS.output_folder + '/MARCO_dataset_' + set_name + '.tf'
+    print('Converting {} to tfrecord'.format(set_name))
+    start_time = time.time()
+    random_title = list(corpus.keys())[0]
+    with tf.io.TFRecordWriter(output_path) as writer:
+        for i, query in enumerate(data):
+            qrels, doc_titles = data[query]
+            query = tokenization.convert_to_unicode(query)
+            print('query', query)
+            query_ids = tokenization.convert_to_bert_input(
+                text=query,
+                max_seq_length=FLAGS.max_query_length,
+                tokenizer=tokenizer,
+                add_cls=True)
+            query_ids_tf = tf.train.Feature(
+                int64_list=tf.train.Int64List(value=query_ids))
+            if set_name == 'train':
+                max_docs = FLAGS.num_train_docs
+            elif set_name == 'dev':
+                max_docs = FLAGS.num_dev_docs
+            elif set_name == 'test':
+                max_docs = FLAGS.num_test_docs
+            doc_titles = doc_titles[:max_docs]
+            # Add fake docs so we always have max_docs per query.
+            doc_titles += max(0, max_docs - len(doc_titles)) * [random_title]
+            labels = [
+                1 if doc_title in qrels else 0
+                for doc_title in doc_titles
+            ]
+            doc_token_ids = [
+                tokenization.convert_to_bert_input(
+                    text=tokenization.convert_to_unicode(corpus[doc_title]),
+                    max_seq_length=FLAGS.max_seq_length - len(query_ids),
+                    tokenizer=tokenizer,
+                    add_cls=False)
+                for doc_title in doc_titles
+            ]
+            for rank, (doc_token_id, label) in enumerate(zip(doc_token_ids, labels)):
+                doc_ids_tf = tf.train.Feature(
+                    int64_list=tf.train.Int64List(value=doc_token_id))
+                labels_tf = tf.train.Feature(
+                    int64_list=tf.train.Int64List(value=[label]))
+                len_gt_titles_tf = tf.train.Feature(
+                    int64_list=tf.train.Int64List(value=[len(qrels)]))
+                features = tf.train.Features(feature={
+                    'query_ids': query_ids_tf,
+                    'doc_ids': doc_ids_tf,
+                    'label': labels_tf,
+                    'len_gt_titles': len_gt_titles_tf,
+                })
+                example = tf.train.Example(features=features)
+                writer.write(example.SerializeToString())
+            print('wrote {}, {} of {} queries'.format(set_name, i, len(data)))
+            time_passed = time.time() - start_time
+            est_hours = (len(data) - i) * time_passed / (max(1.0, i) * 3600)
+            print('estimated total hours to save: {}'.format(est_hours))
 
 
-def convert_train_dataset(tokenizer):
-  print('Converting to Train to tfrecord...')
+def load_qrels(path):
+    """Loads qrels into a dict of key: topic, value: list of relevant doc ids."""
+    qrels = collections.defaultdict(set)
+    with open(path) as f:
+        for i, line in enumerate(f):
+            topic, _, doc_title, relevance = line.rstrip().split(' ')
+            collection = doc_title.rstrip().split('_')[0]
+            if int(relevance) >= 1 and collection == 'MARCO':
+                doc_id = doc_title.rstrip().split('_')[1]
+                qrels[topic].add(doc_id)
+            if i % 1000000 == 0:
+                print('Loading qrels {}'.format(i))
+    return qrels
 
-  start_time = time.time()
 
-  print('Counting number of examples...')
-  num_lines = sum(1 for line in open(FLAGS.train_dataset_path, 'r'))
-  print('{} examples found.'.format(num_lines))
-  writer = tf.python_io.TFRecordWriter(
-      FLAGS.output_folder + '/dataset_train.tf')
+def load_run(path):
+    """Loads run into a dict of key: topic, value: list of candidate doc ids."""
+    # We want to preserve the order of runs so we can pair the run file with the
+    # TFRecord file.
 
-  with open(FLAGS.train_dataset_path, 'r') as f:
-    for i, line in enumerate(f):
-      if i % 1000 == 0:
-        time_passed = int(time.time() - start_time)
-        print('Processed training set, line {} of {} in {} sec'.format(
-            i, num_lines, time_passed))
-        hours_remaining = (num_lines - i) * time_passed / (max(1.0, i) * 3600)
-        print('Estimated hours remaining to write the training set: {}'.format(
-            hours_remaining))
+    run = collections.OrderedDict()
+    with open(path) as f:
+        for i, line in enumerate(f):
+            topic, _, doc_title, rank, _, _ = line.split(' ')
+            collection = doc_title.rstrip().split('_')[0]
+            if topic not in run:
+                run[topic] = []
+            if collection == 'MARCO':
+                doc_id = doc_title.rstrip().split('_')[1]
+                run[topic].append((doc_id, int(rank)))
+            if i % 1000000 == 0:
+                print('Loading run {}'.format(i))
+    # Sort candidate docs by rank.
+    sorted_run = collections.OrderedDict()
+    for topic, doc_titles_ranks in run.items():
+        sorted(doc_titles_ranks, key=lambda x: x[1])
+        doc_titles = [doc_titles for doc_titles, _ in doc_titles_ranks]
+        sorted_run[topic] = doc_titles
+    return sorted_run
 
-      query, positive_doc, negative_doc = line.rstrip().split('\t')
 
-      write_to_tf_record(writer=writer,
-                         tokenizer=tokenizer,
-                         query=query, 
-                         docs=[positive_doc, negative_doc], 
-                         labels=[1, 0])
+def load_queries(path):
+    """Replace topic ids with full topic"""
+    queries = collections.defaultdict()
+    with open(path) as f:
+        for line in f:
+            query_id, query = line.rstrip().split('\t')
+            if query_id not in queries:
+                queries[query_id] = ''
+            queries[query_id] = query
+    return queries
 
-  writer.close()
+
+def load_corpus(path):
+    """Loads MARCO's paraghaphs into a dict of key: title, value: paragraph."""
+    corpus = {}
+    start_time = time.time()
+    approx_total_paragraphs = 9000000
+
+    with open(path) as tsv:
+        for i, line in enumerate(csv.reader(tsv, delimiter="\t")):
+            para_id = line[0]
+            para_txt = line[1]
+            corpus[para_id] = para_txt
+            if i % 10000 == 0:
+                print('Loading paragraph {} of {}'.format(i, approx_total_paragraphs))
+                time_passed = time.time() - start_time
+                hours_remaining = (
+                                          approx_total_paragraphs - i) * time_passed / (max(1.0, i) * 3600)
+                print('Estimated hours remaining to load corpus: {}'.format(
+                    hours_remaining))
+    return corpus
+
+
+def merge(topics, qrels, run):
+    """Merge qrels and runs into a single dict of key: topic,
+    value: tuple(relevant_doc_ids, candidate_doc_ids)"""
+    data = collections.OrderedDict()
+    new_data = collections.defaultdict()
+    for topic, candidate_doc_ids in run.items():
+        data[topic] = (qrels[topic], candidate_doc_ids)
+        new_key = topics[topic]
+        new_data[new_key] = data.pop(topic)
+
+    return new_data
 
 
 def main():
+    print('Loading Tokenizer...')
+    tokenizer = tokenization.FullTokenizer(
+        vocab_file=FLAGS.vocab_file, do_lower_case=True)
 
-  print('Loading Tokenizer...')
-  tokenizer = tokenization.FullTokenizer(
-      vocab_file=FLAGS.vocab_file, do_lower_case=True)
+    if not os.path.exists(FLAGS.output_folder):
+        os.mkdir(FLAGS.output_folder)
 
-  if not os.path.exists(FLAGS.output_folder):
-    os.mkdir(FLAGS.output_folder)
+    print('Loading Corpus...')
+    corpus = load_corpus(FLAGS.corpus)
 
-  convert_train_dataset(tokenizer=tokenizer)
-  convert_eval_dataset(set_name='dev', tokenizer=tokenizer)
-  convert_eval_dataset(set_name='eval', tokenizer=tokenizer)
-  print('Done!')  
+    for set_name, qrels_path, run_path in [
+            # ('train', FLAGS.qrels_train, FLAGS.run_train),
+            # ('dev', FLAGS.qrels_dev, FLAGS.run_dev),
+            ('test', FLAGS.qrels_test, FLAGS.run_test)]:
+        print('Converting {}'.format(set_name))
+        qrels = load_qrels(path=qrels_path)
+        run = load_run(path=run_path)
+        queries = load_queries(path=FLAGS.topics)
+        data = merge(topics=queries, qrels=qrels, run=run)
+        convert_dataset(data=data, corpus=corpus, set_name=set_name, tokenizer=tokenizer)
+
+    print('Done!')
+
 
 if __name__ == '__main__':
-  main()
+    main()
